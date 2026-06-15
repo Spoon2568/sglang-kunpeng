@@ -8,6 +8,15 @@ import torch
 from torch.nn.parameter import Parameter
 
 from sglang.srt.distributed import get_tensor_model_parallel_world_size
+
+# kunpeng
+from sglang.srt.hardware_backend.kunpeng.quantization.w8a8_int8 import (
+    apply_linear,
+    apply_moe,
+    process_linear_weight,
+    process_moe_weight,
+    use_kunpeng_w8a8,
+)
 from sglang.srt.layers.amx_utils import (
     CPUQuantMethod,
     _amx_process_weight_after_loading,
@@ -155,11 +164,12 @@ class W8A8Int8Config(QuantizationConfig):
 
 
 class W8A8Int8LinearMethod(LinearMethodBase):
-
     def __init__(self, quantization_config: W8A8Int8Config):
         self.quantization_config = quantization_config
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
+        if use_kunpeng_w8a8():
+            return process_linear_weight(layer)
         if _is_cpu:
             if _is_cpu_amx_available:
                 _amx_process_weight_after_loading(layer, ["weight"])
@@ -208,6 +218,8 @@ class W8A8Int8LinearMethod(LinearMethodBase):
         x: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ):
+        if use_kunpeng_w8a8():
+            return apply_linear(layer, x, bias)
         if use_intel_amx_backend(layer) or _is_cpu_arm64:
             return torch.ops.sgl_kernel.int8_scaled_mm_with_quant(
                 x,
@@ -314,6 +326,8 @@ class W8A8Int8MoEMethod(FusedMoEMethodBase):
         layer.register_parameter("w2_input_scale", w2_input_scale)
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
+        if use_kunpeng_w8a8():
+            return process_moe_weight(layer)
         if _is_cpu_amx_available:
             _amx_process_weight_after_loading(layer, ["w13_weight", "w2_weight"])
         else:
@@ -353,6 +367,10 @@ class W8A8Int8MoEMethod(FusedMoEMethodBase):
 
         x = dispatch_output.hidden_states
         topk_output = dispatch_output.topk_output
+
+        if use_kunpeng_w8a8():
+            output = apply_moe(layer, dispatch_output, self.moe_runner_config)
+            return StandardCombineInput(hidden_states=output)
 
         if use_intel_amx_backend(layer) or _is_cpu_arm64:
             from sglang.srt.layers.moe.topk import apply_topk_weights_cpu

@@ -45,6 +45,11 @@ from sglang.srt.state_capturer.indexer_topk import (
 )
 from sglang.srt.utils import BumpAllocator
 
+from sglang.srt.hardware_backend.kunpeng.quantization.w8a8_int8 import (
+    _batched_gemm_uk as _kunpeng_uk,
+    _batched_gemm_uv as _kunpeng_uv,
+)
+
 if TYPE_CHECKING:
     from sglang.srt.models.deepseek_v2 import DeepseekV2AttentionMLA
 
@@ -363,6 +368,10 @@ class DeepseekMLAForwardMixin:
                 q_nope_out = bmm_fp8(
                     q_nope_val, self.w_kc, q_nope_scale, self.w_scale, torch.bfloat16
                 )
+        elif getattr(self, "use_kunpeng_int8_bmm", False):
+            q_nope_out = _kunpeng_uk(
+                q_nope, self.w_kc, self.w_kc_scale
+            )
         else:
             q_nope_out = torch.bmm(q_nope.transpose(0, 1), self.w_kc)
 
@@ -644,6 +653,12 @@ class DeepseekMLAForwardMixin:
                     torch.bfloat16,
                 )
                 attn_bmm_output = attn_bmm_output.transpose(0, 1).flatten(1, 2)
+        elif getattr(self, "use_kunpeng_int8_bmm", False):
+            attn_bmm_output = (
+                _kunpeng_uv(attn_output, self.w_vc, self.w_vc_scale)
+                .transpose(0, 1)
+                .flatten(1, 2)
+            )
         elif _is_musa:
             attn_bmm_output = torch.bmm(
                 attn_output.to(torch.bfloat16).transpose(0, 1), self.w_vc

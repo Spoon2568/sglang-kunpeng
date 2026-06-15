@@ -24,6 +24,9 @@ from transformers import PretrainedConfig
 
 from sglang.srt.distributed.parallel_state import GroupCoordinator
 from sglang.srt.environ import envs
+from sglang.srt.hardware_backend.kunpeng.quantization.w8a8_int8 import (
+    use_kunpeng_w8a8,
+)
 from sglang.srt.layers import deep_gemm_wrapper
 from sglang.srt.layers.moe.fused_moe_triton.layer import FusedMoE
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
@@ -560,14 +563,17 @@ class DeepseekV2WeightLoaderMixin:
                         ).to(torch.bfloat16)
                 else:
                     # channel-wise int8 need it
-                    w = w.to(torch.bfloat16) * self_attn.kv_b_proj.weight_scale.to(
-                        torch.bfloat16
-                    )
+                    if use_kunpeng_w8a8():
+                        self_attn.use_kunpeng_int8_bmm = True
+                    else:
+                        w = w.to(torch.bfloat16) * self_attn.kv_b_proj.weight_scale.to(
+                            torch.bfloat16
+                        )
 
             w_kc, w_vc = w.unflatten(
                 0, (-1, self_attn.qk_nope_head_dim + self_attn.v_head_dim)
             ).split([self_attn.qk_nope_head_dim, self_attn.v_head_dim], dim=1)
-
+            
             if (
                 _use_aiter_gfx95
                 and self.quant_config is not None
@@ -588,6 +594,19 @@ class DeepseekV2WeightLoaderMixin:
                 if _is_npu:
                     w_vc = w_vc.contiguous()
                 self_attn.w_vc = bind_or_assign(self_attn.w_vc, w_vc)
+                if getattr(self_attn, "use_kunpeng_int8_bmm", False):
+                    weight_scale = self_attn.kv_b_proj.weight_scale
+                    w_kc_scale, w_vc_scale = weight_scale.unflatten(
+                        0,
+                        (
+                            -1,
+                            self_attn.qk_nope_head_dim + self_attn.v_head_dim,
+                        ),
+                    ).split(
+                        [self_attn.qk_nope_head_dim, self_attn.v_head_dim], dim=1
+                    )
+                    self_attn.w_kc_scale = w_kc_scale.contiguous()
+                    self_attn.w_vc_scale = w_vc_scale.contiguous()
                 if (
                     hasattr(self_attn.kv_b_proj, "weight_scale")
                     and self_attn.w_scale is None

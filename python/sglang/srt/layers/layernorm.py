@@ -219,6 +219,17 @@ class RMSNorm(MultiPlatformOp):
         )
         if _use_aiter:
             self._forward_method = self.forward_aiter
+        else:
+            from sglang.srt.hardware_backend.kunpeng.quantization.w8a8_int8 import (
+                use_kunpeng_w8a8,
+            )
+
+            if use_kunpeng_w8a8():
+                from sglang.srt.hardware_backend.kunpeng.norm import (
+                    rmsnorm_forward_kunpeng,
+                )
+
+                self._forward_method = rmsnorm_forward_kunpeng.__get__(self)
 
     def forward_cuda(
         self,

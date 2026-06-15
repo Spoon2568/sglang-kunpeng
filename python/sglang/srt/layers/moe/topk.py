@@ -100,6 +100,9 @@ from sglang.srt.layers.moe import get_moe_runner_backend
 from sglang.srt.layers.moe.utils import is_deepep_class_backend
 from sglang.srt.layers.utils import MultiPlatformOp
 from sglang.srt.state_capturer.routed_experts import get_global_experts_capturer
+from sglang.srt.hardware_backend.kunpeng.quantization.w8a8_int8 import (
+    use_kunpeng_w8a8,
+)
 from sglang.srt.utils import (
     cpu_has_amx_support,
     get_bool_env_var,
@@ -771,6 +774,28 @@ def grouped_topk_cpu(
     apply_routed_scaling_factor_on_output: Optional[bool] = False,
 ):
     assert not apply_routed_scaling_factor_on_output
+
+    if use_kunpeng_w8a8():
+        if num_fused_shared_experts != 0:
+            raise RuntimeError(
+                "Kunpeng W8A8 backend does not support fused shared experts (mode A). "
+                "Shared experts must be computed independently (mode B). "
+                "Please launch the server with --disable-shared-experts-fusion"
+            )
+
+        from sglang.srt.hardware_backend.kunpeng.topk import (
+            grouped_topk_forward,
+        )
+
+        return grouped_topk_forward(
+            router_logits=gating_output,
+            topk=topk,
+            num_expert_group=num_expert_group,
+            topk_group=topk_group,
+            renormalize=renormalize,
+            scoring_func_sigmoid=False,
+        )
+
     return torch.ops.sgl_kernel.grouped_topk_cpu(
         hidden_states,
         gating_output,
@@ -1233,6 +1258,28 @@ def biased_grouped_topk_cpu(
     routed_scaling_factor: Optional[float] = None,
     apply_routed_scaling_factor_on_output: Optional[bool] = False,
 ):
+    if use_kunpeng_w8a8():
+        if num_fused_shared_experts != 0:
+            raise RuntimeError(
+                "Kunpeng W8A8 backend does not support fused shared experts (mode A). "
+                "Shared experts must be computed independently (mode B). "
+                "Please launch the server with --disable-shared-experts-fusion"
+            )
+
+        from sglang.srt.hardware_backend.kunpeng.topk import (
+            grouped_topk_forward,
+        )
+
+        return grouped_topk_forward(
+            router_logits=gating_output,
+            topk=topk,
+            num_expert_group=num_expert_group,
+            topk_group=topk_group,
+            renormalize=renormalize,
+            scoring_func_sigmoid=True,
+            bias=correction_bias,
+        )
+
     return torch.ops.sgl_kernel.biased_grouped_topk_cpu(
         hidden_states,
         gating_output,
@@ -1248,7 +1295,7 @@ def biased_grouped_topk_cpu(
     )
 
 
-if _is_cpu and _is_cpu_amx_available:
+if _is_cpu and (_is_cpu_amx_available or use_kunpeng_w8a8()):
     biased_grouped_topk = biased_grouped_topk_cpu
     grouped_topk = grouped_topk_cpu
     fused_topk_native = fused_topk_cpu

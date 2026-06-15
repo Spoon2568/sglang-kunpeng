@@ -10,6 +10,9 @@ import torch.nn.functional as F
 from torch.nn.parameter import Parameter
 
 from sglang.srt.environ import envs
+from sglang.srt.hardware_backend.kunpeng.quantization.w8a8_int8 import (
+    use_kunpeng_w8a8,
+)
 from sglang.srt.layers.amx_utils import (
     CPUQuantMethod,
     _amx_process_weight_after_loading,
@@ -104,6 +107,18 @@ class UnquantizedEmbeddingMethod(QuantizeMethodBase):
         return F.linear(x, layer.weight, bias)
 
     def embedding(self, layer: torch.nn.Module, input_: torch.Tensor) -> torch.Tensor:
+        if use_kunpeng_w8a8():
+            from sglang.srt.hardware_backend.kunpeng.embedding import (
+                embedding_forward,
+            )
+
+            # VocabParallelEmbedding tracks the vocab shard range in shard_indices
+            vocab_start = getattr(
+                layer, "org_vocab_start_index", 0
+            )  # fallback to 0 for TP=1
+            vocab_end = getattr(layer, "org_vocab_end_index", layer.weight.shape[0])
+            return embedding_forward(input_, layer.weight, vocab_start, vocab_end)
+
         return F.embedding(input_, layer.weight)
 
 

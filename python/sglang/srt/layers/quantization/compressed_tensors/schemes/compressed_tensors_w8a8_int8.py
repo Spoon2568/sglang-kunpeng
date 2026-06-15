@@ -114,7 +114,7 @@ class CompressedTensorsW8A8Int8(CompressedTensorsLinearScheme):
             layer.weight_scale = Parameter(max_w_scale, requires_grad=False)
 
         # If channelwise, scales are already lined up, so just transpose.
-        elif self.strategy == QuantizationStrategy.CHANNEL:
+        elif self.strategy == QuantizationStrategy.CHANNEL: 
             weight = layer.weight
             weight_scale = layer.weight_scale.data
 

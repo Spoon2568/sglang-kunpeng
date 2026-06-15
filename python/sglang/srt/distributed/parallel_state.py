@@ -440,6 +440,20 @@ class GroupCoordinator:
         if use_npu_communicator and self.world_size > 1:
             self.npu_communicator = NpuCommunicator(group=self.device_group)
 
+        from sglang.srt.distributed.device_communicators.kunpeng_communicator import (
+            KunpengCommunicator,
+        )
+
+        self.kunpeng_communicator: Optional[KunpengCommunicator] = None
+        if self.world_size > 1:
+            # Enabled via SGLANG_USE_KUNPENG_TP=1; otherwise constructs disabled.
+            self.kunpeng_communicator = KunpengCommunicator(
+                self.cpu_group,
+                self.rank_in_group,
+                self.world_size,
+                self.local_rank,
+            )
+
         # Create message queue
         from sglang.srt.distributed.device_communicators.shm_broadcast import (
             MessageQueue,
@@ -576,6 +590,11 @@ class GroupCoordinator:
             return input_
 
         if input_.is_cpu:
+            if (
+                self.kunpeng_communicator is not None
+                and not self.kunpeng_communicator.disabled
+            ):
+                return self.kunpeng_communicator.all_reduce(input_)
             if is_shm_available(input_.dtype, self.world_size, self.local_size):
                 torch.ops.sgl_kernel.shm_allreduce(input_, REDUCE_OP_SUM)
             else:
@@ -874,6 +893,15 @@ class GroupCoordinator:
         npu_comm = self.npu_communicator
         if npu_comm is not None and not npu_comm.disabled:
             return npu_comm.all_gather(input_, dim)
+
+        # For Kunpeng CPU, use the custom KUTACC communicator.
+        kunpeng_comm = self.kunpeng_communicator
+        if (
+            input_.is_cpu
+            and kunpeng_comm is not None
+            and not kunpeng_comm.disabled
+        ):
+            return kunpeng_comm.all_gather(input_, dim)
 
         if dim < 0:
             # Convert negative dim to positive.
@@ -1380,6 +1408,10 @@ class GroupCoordinator:
         return tensor
 
     def destroy(self):
+        # Clean up kunpeng communicator first (MPI/KUPL/KUTACC resources)
+        if hasattr(self, 'kunpeng_communicator') and self.kunpeng_communicator is not None:
+            self.kunpeng_communicator.destroy()
+            self.kunpeng_communicator = None
         if self.device_group is not None:
             torch.distributed.destroy_process_group(self.device_group)
             self.device_group = None

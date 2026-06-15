@@ -120,7 +120,16 @@ class Sampler(nn.Module):
 
         if sampling_info.is_all_greedy:
             # Use torch.argmax if all requests use greedy sampling
-            batch_next_token_ids = torch.argmax(logits, -1)
+            from sglang.srt.hardware_backend.kunpeng.quantization.w8a8_int8 import (
+                use_kunpeng_w8a8,
+            )
+
+            if use_kunpeng_w8a8():
+                from sglang.srt.hardware_backend.kunpeng.argmax import argmax_forward
+
+                batch_next_token_ids = argmax_forward(logits)
+            else:
+                batch_next_token_ids = torch.argmax(logits, -1)
             if return_logprob:
                 original_logprobs = logprobs = torch.nn.functional.log_softmax(
                     logits, dim=-1
